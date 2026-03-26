@@ -1,0 +1,162 @@
+{% extends "rest_framework/base.html" %}
+
+{% block userlinks %}
+  <button
+    onclick="document.getElementById('jwt-modal').style.display='flex'"
+    style="
+      background: #2196F3;
+      color: white;
+      border: none;
+      padding: 6px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      margin-right: 10px;
+    "
+  >
+    Authorize
+  </button>
+  {{ block.super }}
+{% endblock %}
+
+{% block script %}
+  {{ block.super }}
+  <style>
+    #jwt-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 9999;
+      align-items: center;
+      justify-content: center;
+    }
+    #jwt-modal-box {
+      background: white;
+      padding: 28px;
+      border-radius: 8px;
+      width: 420px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+      font-family: sans-serif;
+    }
+    #jwt-modal-box h3 {
+      margin: 0 0 6px;
+      font-size: 16px;
+    }
+    #jwt-modal-box p {
+      margin: 0 0 14px;
+      font-size: 12px;
+      color: #666;
+    }
+    #jwt-modal-box input {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 13px;
+      box-sizing: border-box;
+      margin-bottom: 14px;
+    }
+    .jwt-modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .jwt-modal-actions button {
+      padding: 7px 18px;
+      border-radius: 4px;
+      border: none;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    #jwt-save-btn { background: #2196F3; color: white; }
+    #jwt-clear-btn { background: #f44336; color: white; }
+    #jwt-cancel-btn { background: #eee; color: #333; }
+    #jwt-status {
+      font-size: 12px;
+      margin-bottom: 10px;
+      padding: 6px 10px;
+      border-radius: 4px;
+      display: none;
+    }
+    #jwt-status.active {
+      display: block;
+      background: #e8f5e9;
+      color: #2e7d32;
+      border: 1px solid #a5d6a7;
+    }
+  </style>
+
+  <!-- Modal -->
+  <div id="jwt-modal">
+    <div id="jwt-modal-box">
+      <h3>Authorize</h3>
+      <p>Paste your access token below. It will be sent as <code>Authorization: Bearer &lt;token&gt;</code> on every request.</p>
+      <div id="jwt-status"></div>
+      <input type="text" id="jwt-input" placeholder="eyJhbGciOi..." />
+      <div class="jwt-modal-actions">
+        <button id="jwt-clear-btn" onclick="clearToken()">Clear</button>
+        <button id="jwt-cancel-btn" onclick="document.getElementById('jwt-modal').style.display='none'">Cancel</button>
+        <button id="jwt-save-btn" onclick="saveToken()">Authorize</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const TOKEN_KEY = 'drf_jwt_token';
+
+    // On load — restore token and patch fetch/XHR
+    (function init() {
+      const token = localStorage.getItem(TOKEN_KEY);
+      if (token) {
+        injectToken(token);
+        showStatus(token);
+      }
+    })();
+
+    function saveToken() {
+      const token = document.getElementById('jwt-input').value.trim();
+      if (!token) return;
+      localStorage.setItem(TOKEN_KEY, token);
+      injectToken(token);
+      showStatus(token);
+      document.getElementById('jwt-modal').style.display = 'none';
+      document.getElementById('jwt-input').value = '';
+    }
+
+    function clearToken() {
+      localStorage.removeItem(TOKEN_KEY);
+      document.getElementById('jwt-status').classList.remove('active');
+      document.getElementById('jwt-modal').style.display = 'none';
+      location.reload();
+    }
+
+    function showStatus(token) {
+      const el = document.getElementById('jwt-status');
+      el.textContent = 'Token active: ' + token.substring(0, 24) + '...';
+      el.classList.add('active');
+    }
+
+    function injectToken(token) {
+      // Patch fetch
+      const _fetch = window.fetch;
+      window.fetch = function(url, options = {}) {
+        options.headers = options.headers || {};
+        options.headers['Authorization'] = 'Bearer ' + token;
+        return _fetch(url, options);
+      };
+
+      // Patch XMLHttpRequest (DRF browsable API uses XHR for form submissions)
+      const _open = XMLHttpRequest.prototype.open;
+      const _send = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+        this._url = url;
+        return _open.apply(this, [method, url, ...rest]);
+      };
+      XMLHttpRequest.prototype.send = function(...args) {
+        this.setRequestHeader('Authorization', 'Bearer ' + token);
+        return _send.apply(this, args);
+      };
+    }
+  </script>
+{% endblock %}
