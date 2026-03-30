@@ -25,7 +25,6 @@ class CustomerProfileInline(admin.StackedInline):
 
 
 def get_inlines(obj):
-    """Return the correct inlines based on the user's role."""
     if obj is None:
         return []
     inlines = [AddressInline]

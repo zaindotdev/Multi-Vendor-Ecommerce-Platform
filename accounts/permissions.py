@@ -2,7 +2,6 @@ from rest_framework import permissions
 from .models import User
 
 class IsSelf(permissions.BasePermission):
-    """Allow access only to the user themselves."""
     def has_object_permission(self, request, view, obj):
         return obj == request.user
 

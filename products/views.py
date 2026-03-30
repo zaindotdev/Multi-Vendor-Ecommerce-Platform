@@ -8,7 +8,7 @@ from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
 
 from .filters import ProductFilter, CategoryFilter
-from .pagination import ProductPagination, StandardPagination
+from .pagination import StandardPagination, ProductPagination
 from .models import Category, Product, ProductVariant, ProductImage, Review
 from .permissions import IsProductOwner
 from .serializers import (
@@ -21,10 +21,6 @@ from .serializers import (
 
 
 class CategoryViewSet(viewsets.ModelViewSet):
-    """
-    API endpoint for product categories.
-    """
-
     queryset = Category.objects.select_related("parent")
     serializer_class = CategorySerializer
     lookup_field = "slug"
@@ -38,10 +34,6 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
 
 class ProductViewSet(viewsets.ModelViewSet):
-    """
-    API endpoint for products.
-    """
-
     serializer_class = ProductSerializer
     lookup_field = "slug"
 
@@ -63,15 +55,10 @@ class ProductViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer) -> None:
-        """Bind product to authenticated vendor."""
         serializer.save(vendor=self.request.user)
 
 
 class ProductVariantViewSet(viewsets.ModelViewSet):
-    """
-    API endpoint for product variants.
-    """
-
     queryset = ProductVariant.objects.select_related("product", "product__vendor")
     serializer_class = ProductVariantSerializer
     permission_classes = [IsAuthenticatedOrReadOnly, IsProductOwner]
@@ -80,9 +67,6 @@ class ProductVariantViewSet(viewsets.ModelViewSet):
 
 
 class ProductImageViewSet(viewsets.ModelViewSet):
-    """
-    API endpoint for product images.
-    """
 
     queryset = ProductImage.objects.select_related("product", "product__vendor")
     serializer_class = ProductImageSerializer
@@ -92,9 +76,6 @@ class ProductImageViewSet(viewsets.ModelViewSet):
 
 
 class ReviewViewSet(viewsets.ModelViewSet):
-    """
-    API endpoint for product reviews.
-    """
 
     queryset = Review.objects.select_related("product", "user")
     serializer_class = ReviewSerializer

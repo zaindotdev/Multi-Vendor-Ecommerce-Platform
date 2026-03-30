@@ -8,8 +8,6 @@ from .models import Product
 
 
 class IsVendor(BasePermission):
-    """Allow create access only to authenticated vendor users."""
-
     message = "Only vendors can create products."
 
     def has_permission(self, request, view) -> bool:
@@ -20,7 +18,6 @@ class IsVendor(BasePermission):
 
 
 class IsProductOwner(BasePermission):
-    """Object-level permission to allow only product owners to modify resources."""
 
     message = "Only the product owner can modify this resource."
 

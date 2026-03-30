@@ -7,8 +7,6 @@ from .models import Product, ProductVariant, Category
 
 
 class ProductFilter(django_filters.FilterSet):
-    """Advanced filtering options for product listing endpoints."""
-
     category = django_filters.CharFilter(method="filter_category")
     category__slug = django_filters.CharFilter(field_name="category__slug", lookup_expr="iexact")
     vendor = django_filters.NumberFilter(field_name="vendor")
@@ -35,23 +33,19 @@ class ProductFilter(django_filters.FilterSet):
         }
 
     def filter_category(self, queryset: QuerySet[Product], name: str, value: str) -> QuerySet[Product]:
-        """Support category filtering by ID, slug, or case-insensitive name."""
         if value.isdigit():
             return queryset.filter(category_id=int(value))
         return queryset.filter(Q(category__slug__iexact=value) | Q(category__name__iexact=value))
 
     def filter_min_rating(self, queryset: QuerySet[Product], name: str, value: float) -> QuerySet[Product]:
-        """Return products with average review rating >= provided value."""
         return queryset.annotate(avg_rating=Avg("reviews__rating")).filter(avg_rating__gte=value)
 
     def filter_in_stock(self, queryset: QuerySet[Product], name: str, value: bool) -> QuerySet[Product]:
-        """Filter by whether any product variant has stock > 0."""
         variant_in_stock = ProductVariant.objects.filter(product=OuterRef("pk"), stock__gt=0)
         queryset = queryset.annotate(has_stock=Exists(variant_in_stock))
         return queryset.filter(has_stock=value)
 
     def filter_search(self, queryset: QuerySet[Product], name: str, value: str) -> QuerySet[Product]:
-        """Case-insensitive search by product name and description."""
         return queryset.filter(Q(name__icontains=value) | Q(description__icontains=value)).distinct()
 
 class CategoryFilter(django_filters.FilterSet):
