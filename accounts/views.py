@@ -3,15 +3,23 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
-from .models import User, Address, VendorProfile, CustomerProfile
+from .models import User, Address
 from .serializers import (
-    UserSerializer, UserRegistrationSerializer,
+    UserSerializer, UserRegistrationSerializer, VendorRegistrationSerializer,
     AddressSerializer, VendorProfileSerializer, CustomerProfileSerializer,
     VendorProfileUpdateSerializer, CustomerProfileUpdateSerializer,
     UserLoginSerializer, PasswordChangeSerializer,
 )
-from .permissions import IsVendor, IsSelf, IsAdminRole
+from .permissions import IsVendor
+from django.contrib.auth import get_user_model
+from django.core import signing
+from rest_framework.views import APIView
+from rest_framework.response import Response
+
+from drf_spectacular.utils import extend_schema
+
 import logging
+
 
 logger = logging.getLogger(__name__)
 
@@ -27,25 +35,42 @@ class UserViewSet(viewsets.GenericViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer
 
+
     def get_permissions(self):
-        if self.action in ('register', 'login'):
+        if self.action in ('register', 'login', 'vendor_register'):
             return [permissions.AllowAny()]
         return [permissions.IsAuthenticated()]
+
 
     def get_serializer_class(self):
         if self.action == 'register':
             return UserRegistrationSerializer
+        if self.action == 'vendor_register':
+            return VendorRegistrationSerializer
         if self.action == 'login':
             return UserLoginSerializer
         if self.action == 'change_password':
             return PasswordChangeSerializer
         return UserSerializer
+    @action(detail=False, methods=['post'], url_path='vendor-register')
+    def vendor_register(self, request):
+        serializer = VendorRegistrationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        from .tasks import send_verification_email
+        send_verification_email.delay(user.id)
+        return Response(
+            {'user': UserSerializer(user).data, 'tokens': get_tokens(user)},
+            status=status.HTTP_201_CREATED,
+        )
 
     @action(detail=False, methods=['post'])
     def register(self, request):
         serializer = UserRegistrationSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        from .tasks import send_verification_email
+        send_verification_email.delay(user.id)
         return Response(
             {'user': UserSerializer(user).data, 'tokens': get_tokens(user)},
             status=status.HTTP_201_CREATED,
@@ -111,10 +136,13 @@ class UserViewSet(viewsets.GenericViewSet):
 
 
 class AddressViewSet(viewsets.ModelViewSet):
+    queryset = Address.objects.none()
     serializer_class = AddressSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return Address.objects.none()
         return Address.objects.filter(user=self.request.user)
 
     def perform_create(self, serializer):
@@ -123,11 +151,10 @@ class AddressViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='set-default')
     def set_default(self, request, pk=None):
         address = self.get_object()
+        Address.objects.filter(user=request.user, is_default=True).update(is_default=False)
         address.is_default = True
-        address.save()
+        address.save(update_fields=['is_default'])
         return Response({'detail': 'Default address updated.'})
-
-
 class VendorProfileViewSet(viewsets.GenericViewSet):
     permission_classes = [permissions.IsAuthenticated, IsVendor]
     serializer_class = VendorProfileSerializer
@@ -168,3 +195,27 @@ class CustomerProfileViewSet(viewsets.GenericViewSet):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+    
+@extend_schema(
+    request=None,
+    responses={200: {'type': 'object', 'properties': {'detail': {'type': 'string'}}}},
+)
+class VerifyEmailView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request):
+        token = request.query_params.get('token')
+        if not token:
+            return Response({'detail': 'Token required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            data = signing.loads(token, max_age=60*60*24)
+            user_id = data['user_id']
+            User = get_user_model()
+            user = User.objects.get(pk=user_id)
+            if not user.is_verified:
+                user.is_verified = True
+                user.save()
+            return Response({'detail': 'Email verified.'}, status=status.HTTP_200_OK)
+        except Exception:
+            return Response({'detail': 'Invalid or expired token.'}, status=status.HTTP_400_BAD_REQUEST)

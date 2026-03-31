@@ -75,6 +75,51 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         )
 
 
+
+class VendorRegistrationSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, validators=[validate_password])
+    password_confirm = serializers.CharField(write_only=True)
+    company_name = serializers.CharField()
+    company_description = serializers.CharField(required=False, allow_blank=True)
+    company_slug = serializers.SlugField()
+    logo_url = serializers.URLField(required=False, allow_blank=True)
+    banner_url = serializers.URLField(required=False, allow_blank=True)
+    contact_number = serializers.CharField(required=False, allow_blank=True)
+
+    class Meta:
+        model = User
+        fields = [
+            'username', 'email', 'password', 'password_confirm',
+            'company_name', 'company_description', 'company_slug',
+            'logo_url', 'banner_url', 'contact_number'
+        ]
+
+    def validate(self, attrs):
+        if attrs['password'] != attrs.pop('password_confirm'):
+            raise serializers.ValidationError({'password_confirm': 'Passwords do not match.'})
+        return attrs
+
+    def create(self, validated_data):
+        from django.db import transaction
+        vendor_fields = {
+            'company_name': validated_data.pop('company_name'),
+            'company_description': validated_data.pop('company_description', ''),
+            'company_slug': validated_data.pop('company_slug'),
+            'logo_url': validated_data.pop('logo_url', ''),
+            'banner_url': validated_data.pop('banner_url', ''),
+            'contact_number': validated_data.pop('contact_number', ''),
+        }
+        with transaction.atomic():
+            user = User.objects.create_user(
+                username=validated_data['username'],
+                email=validated_data['email'],
+                password=validated_data['password'],
+                role=User.Role.VENDOR,
+            )
+            VendorProfile.objects.create(user=user, **vendor_fields)
+        return user
+
+
 class UserLoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)

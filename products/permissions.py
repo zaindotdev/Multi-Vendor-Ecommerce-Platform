@@ -7,19 +7,30 @@ from rest_framework.permissions import SAFE_METHODS, BasePermission
 from .models import Product
 
 
-class IsVendor(BasePermission):
-    message = "Only vendors can create products."
+class IsAdminUser(BasePermission):
+    message = 'Only admins can perform this action.'
 
     def has_permission(self, request, view) -> bool:
-        if request.method != "POST":
-            return True
-        user = request.user
-        return bool(user and user.is_authenticated and getattr(user, "role", None) == "vendor")
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and getattr(request.user, 'role', None) == 'admin'
+        )
+
+
+class IsVendor(BasePermission):
+    message = 'Only vendors can perform this action.'
+
+    def has_permission(self, request, view) -> bool:
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and getattr(request.user, 'role', None) == 'vendor'
+        )
 
 
 class IsProductOwner(BasePermission):
-
-    message = "Only the product owner can modify this resource."
+    message = 'Only the product owner can modify this resource.'
 
     def has_permission(self, request, view) -> bool:
         if request.method in SAFE_METHODS:
@@ -28,15 +39,15 @@ class IsProductOwner(BasePermission):
         if not (request.user and request.user.is_authenticated):
             return False
 
-        if view.basename == "product" and request.method == "POST":
-            return IsVendor().has_permission(request, view)
+        if view.basename == 'product' and request.method == 'POST':
+            return getattr(request.user, 'role', None) == 'vendor'
 
-        if view.basename in {"product-variant", "product-image"} and request.method == "POST":
-            product_id = request.data.get("product")
+        if view.basename in {'product-variant', 'product-image'} and request.method == 'POST':
+            product_id = request.data.get('product')
             if not product_id:
                 return False
             try:
-                product = Product.objects.only("vendor_id").get(pk=product_id)
+                product = Product.objects.only('vendor_id').get(pk=product_id)
             except Product.DoesNotExist:
                 return False
             return product.vendor_id == request.user.id
@@ -53,7 +64,7 @@ class IsProductOwner(BasePermission):
         if isinstance(obj, Product):
             return obj.vendor_id == request.user.id
 
-        product = getattr(obj, "product", None)
+        product = getattr(obj, 'product', None)
         if product is None:
             return False
 
