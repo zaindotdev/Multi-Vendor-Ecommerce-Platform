@@ -5,8 +5,9 @@ import logging
 import stripe
 from celery import shared_task
 from django.conf import settings
-from django.core.mail import EmailMultiAlternatives
+from utils.send_mail import send_mail
 from django.template.loader import render_to_string
+from django.db import transaction
 
 logger = logging.getLogger(__name__)
 
@@ -14,15 +15,12 @@ stripe.api_key = settings.STRIPE_SECRET_KEY
 
 
 def _send_email(subject: str, to: str, text_body: str, html_body: str | None = None) -> None:
-    msg = EmailMultiAlternatives(
+    send_mail(
+        to=to,
         subject=subject,
-        body=text_body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[to],
+        message=text_body,
+        html=html_body or "",
     )
-    if html_body:
-        msg.attach_alternative(html_body, 'text/html')
-    msg.send()
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)

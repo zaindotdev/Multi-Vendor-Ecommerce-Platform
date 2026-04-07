@@ -1,0 +1,3 @@
+Payout initiated
+
+Hi {{ vendor.company_name }}, your payout of {{ payout.amount }} has been initiated.

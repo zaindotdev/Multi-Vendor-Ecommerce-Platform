@@ -1,7 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser, UserManager
-from django.db.models.signals import post_save
-from django.dispatch import receiver
+from django.utils.text import slugify
+import uuid
 
 
 class TimeStampMixin(models.Model):
@@ -76,12 +76,21 @@ class VendorProfile(TimeStampMixin):
     company_name = models.CharField(max_length=255)
     company_description = models.TextField(blank=True)
     company_slug = models.SlugField(unique=True)
-    logo_url = models.URLField(blank=True)
-    banner_url = models.URLField(blank=True)
+    logo_url = models.ImageField(blank=True)
+    banner_url = models.ImageField(blank=True)
     commission_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
     payout_threshold = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     is_approved = models.BooleanField(default=False)
     contact_number = models.CharField(max_length=20, blank=True)
+
+    def save(self, *args, **kwargs):
+        if not self.company_slug:
+            base_slug = slugify(self.company_name)
+            slug = base_slug
+            while VendorProfile.objects.filter(company_slug=slug).exclude(pk=self.pk).exists():
+                slug = f"{base_slug}-{uuid.uuid4().hex[:6]}"
+            self.company_slug = slug
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.company_name
@@ -97,13 +106,3 @@ class CustomerProfile(TimeStampMixin):
     @property
     def default_address(self):
         return self.user.addresses.filter(is_default=True).first()
-
-
-@receiver(post_save, sender=User)
-def create_user_profile(sender, instance, created, **kwargs):
-    if not created:
-        return
-    if instance.role == User.Role.VENDOR:
-        VendorProfile.objects.get_or_create(user=instance)
-    elif instance.role == User.Role.CUSTOMER:
-        CustomerProfile.objects.get_or_create(user=instance)

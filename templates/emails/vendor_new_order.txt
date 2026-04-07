@@ -1,0 +1,5 @@
+New order #{{ order.id }}
+
+Hi {{ vendor.company_name }},
+
+You have a new order.

@@ -1,0 +1,3 @@
+Order #{{ order.id }} status update
+
+Your order is now {{ order.get_status_display }}.

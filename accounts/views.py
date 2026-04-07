@@ -14,14 +14,12 @@ from .permissions import IsVendor
 from django.contrib.auth import get_user_model
 from django.core import signing
 from rest_framework.views import APIView
-from rest_framework.response import Response
-
+from .tasks import send_verification_email, send_vendor_approval_mail_to_admin
 from drf_spectacular.utils import extend_schema
-
 import logging
 
-
 logger = logging.getLogger(__name__)
+
 
 def get_tokens(user):
     refresh = RefreshToken.for_user(user)
@@ -35,12 +33,10 @@ class UserViewSet(viewsets.GenericViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer
 
-
     def get_permissions(self):
         if self.action in ('register', 'login', 'vendor_register'):
             return [permissions.AllowAny()]
         return [permissions.IsAuthenticated()]
-
 
     def get_serializer_class(self):
         if self.action == 'register':
@@ -52,31 +48,33 @@ class UserViewSet(viewsets.GenericViewSet):
         if self.action == 'change_password':
             return PasswordChangeSerializer
         return UserSerializer
-    @action(detail=False, methods=['post'], url_path='vendor-register')
-    def vendor_register(self, request):
-        serializer = VendorRegistrationSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        user = serializer.save()
-        from .tasks import send_verification_email
-        send_verification_email.delay(user.id)
-        return Response(
-            {'user': UserSerializer(user).data, 'tokens': get_tokens(user)},
-            status=status.HTTP_201_CREATED,
-        )
 
-    @action(detail=False, methods=['post'])
+    @action(detail=False, methods=['post'], url_path='register')
     def register(self, request):
+        """Customer registration only — role is hardcoded to CUSTOMER."""
         serializer = UserRegistrationSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        from .tasks import send_verification_email
         send_verification_email.delay(user.id)
         return Response(
             {'user': UserSerializer(user).data, 'tokens': get_tokens(user)},
             status=status.HTTP_201_CREATED,
         )
 
-    @action(detail=False, methods=['post'])
+    @action(detail=False, methods=['post'], url_path='vendor-register')
+    def vendor_register(self, request):
+        """Vendor registration — creates user + VendorProfile atomically."""
+        serializer = VendorRegistrationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        send_verification_email.delay(user.id)
+        send_vendor_approval_mail_to_admin.delay(user.id)
+        return Response(
+            {'user': UserSerializer(user).data, 'tokens': get_tokens(user)},
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=['post'], url_path='login')
     def login(self, request):
         serializer = UserLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -99,21 +97,17 @@ class UserViewSet(viewsets.GenericViewSet):
             {'user': UserSerializer(user).data, 'tokens': get_tokens(user)},
             status=status.HTTP_200_OK,
         )
-        
-    @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+
+    @action(detail=False, methods=['post'], url_path='logout')
     def logout(self, request):
+        refresh_token = request.data.get('refresh')
+        if not refresh_token:
+            return Response({'detail': 'Refresh token required.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            refresh_token = request.data.get('refresh')
-            if not refresh_token:
-                return Response(
-                    {'detail': 'Refresh token required.'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
             RefreshToken(refresh_token).blacklist()
-            logger.info(f"Logout attempt for user: {request.user.email}")
             return Response({'detail': 'Logged out.'}, status=status.HTTP_200_OK)
         except Exception:
-            logger.error("Error occurred while logging out.")
+            logger.exception('Logout failed for user %s.', request.user.email)
             return Response({'detail': 'Invalid token.'}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=False, methods=['get', 'patch'], url_path='me')
@@ -127,12 +121,27 @@ class UserViewSet(viewsets.GenericViewSet):
 
     @action(detail=False, methods=['post'], url_path='me/change-password')
     def change_password(self, request):
-        serializer = PasswordChangeSerializer(
-            data=request.data, context={'request': request}
-        )
+        serializer = PasswordChangeSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response({'detail': 'Password updated.'}, status=status.HTTP_200_OK)
+
+    @action(
+        detail=False, methods=['post'],
+        url_path='admin/approve-vendor',
+        permission_classes=[permissions.IsAuthenticated, permissions.IsAdminUser],
+    )
+    def approve_vendor(self, request):
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return Response({'detail': 'User ID required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            user = User.objects.get(pk=user_id, role=User.Role.VENDOR)
+            user.is_approved = True
+            user.save(update_fields=['is_approved'])
+            return Response({'detail': f'Vendor {user.username} approved.'})
+        except User.DoesNotExist:
+            return Response({'detail': 'Vendor not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 
 class AddressViewSet(viewsets.ModelViewSet):
@@ -155,6 +164,8 @@ class AddressViewSet(viewsets.ModelViewSet):
         address.is_default = True
         address.save(update_fields=['is_default'])
         return Response({'detail': 'Default address updated.'})
+
+
 class VendorProfileViewSet(viewsets.GenericViewSet):
     permission_classes = [permissions.IsAuthenticated, IsVendor]
     serializer_class = VendorProfileSerializer
@@ -195,7 +206,8 @@ class CustomerProfileViewSet(viewsets.GenericViewSet):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
-    
+
+
 @extend_schema(
     request=None,
     responses={200: {'type': 'object', 'properties': {'detail': {'type': 'string'}}}},
@@ -209,13 +221,12 @@ class VerifyEmailView(APIView):
         if not token:
             return Response({'detail': 'Token required.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            data = signing.loads(token, max_age=60*60*24)
-            user_id = data['user_id']
+            data = signing.loads(token, max_age=60 * 60 * 24)
             User = get_user_model()
-            user = User.objects.get(pk=user_id)
+            user = User.objects.get(pk=data['user_id'])
             if not user.is_verified:
                 user.is_verified = True
-                user.save()
-            return Response({'detail': 'Email verified.'}, status=status.HTTP_200_OK)
+                user.save(update_fields=['is_verified'])
+            return Response({'detail': 'Email verified.'})
         except Exception:
             return Response({'detail': 'Invalid or expired token.'}, status=status.HTTP_400_BAD_REQUEST)

@@ -9,7 +9,7 @@ from .models import (
 
 def _resolve_vendor(variant):
     try:
-        return variant.product.vendor 
+        return variant.product.vendor.vendor_profile
     except AttributeError:
         return None
 

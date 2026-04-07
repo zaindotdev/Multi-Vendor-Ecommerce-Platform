@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from django.http import HttpResponse
 import stripe
 from decimal import Decimal
 
 from django.conf import settings
 from django.db import transaction
 from django.db.models import F
-from django.views.decorators.csrf import csrf_exempt
+from django.views import View
 
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -485,27 +486,6 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
 
         return Response({'client_secret': intent.client_secret})
 
-    @action(detail=False, methods=['post'], url_path='stripe-webhook', permission_classes=[AllowAny])
-    @csrf_exempt
-    def stripe_webhook(self, request: Request) -> Response:
-        payload = request.body
-        sig_header = request.META.get('HTTP_STRIPE_SIGNATURE', '')
-
-        try:
-            event = stripe.Webhook.construct_event(
-                payload, sig_header, settings.STRIPE_WEBHOOK_SECRET
-            )
-        except (ValueError, stripe.error.SignatureVerificationError):
-            return Response({'detail': 'Invalid signature.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if event['type'] == 'payment_intent.succeeded':
-            self._handle_payment_succeeded(event['data']['object'])
-
-        elif event['type'] == 'payment_intent.payment_failed':
-            self._handle_payment_failed(event['data']['object'])
-
-        return Response({'status': 'ok'})
-
     @staticmethod
     def _handle_payment_succeeded(intent: dict) -> None:
         intent_id = intent.get('id')
@@ -539,6 +519,24 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
         payment.status = Payment.Status.FAILED
         payment.save(update_fields=['status'])
 
+class StripeWebhookView(View):
+    def post(self, request):
+        payload = request.body
+        sig_header = request.META.get('HTTP_STRIPE_SIGNATURE', '')
+
+        try:
+            event = stripe.Webhook.construct_event(
+                payload, sig_header, settings.STRIPE_WEBHOOK_SECRET
+            )
+        except (ValueError, stripe.error.SignatureVerificationError):
+            return HttpResponse(status=400)
+
+        if event['type'] == 'payment_intent.succeeded':
+            PaymentViewSet._handle_payment_succeeded(event['data']['object'])
+        elif event['type'] == 'payment_intent.payment_failed':
+            PaymentViewSet._handle_payment_failed(event['data']['object'])
+
+        return HttpResponse(status=200)
 
 class CommissionViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = CommissionSerializer

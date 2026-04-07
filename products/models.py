@@ -65,13 +65,22 @@ class ProductImage(TimeStampModel):
     product = models.ForeignKey(
         Product, on_delete=models.CASCADE, related_name='images'
     )
-    image_url = models.URLField()
+    image_url = models.ImageField()
     alt_text = models.CharField(max_length=255, blank=True)
     is_primary = models.BooleanField(default=False)
     display_order = models.PositiveIntegerField(default=0)
 
     class Meta:
         ordering = ['display_order']
+
+    def get_image_url(self, obj) -> str | None:
+        if not obj.image_url:
+            return None
+        try:
+            request = self.context.get('request')
+            return request.build_absolute_uri(obj.image_url.url) if request else obj.image_url.url
+        except Exception:
+            return None
 
     def __str__(self):
         return f"Image for {self.product.name}"

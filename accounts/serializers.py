@@ -12,7 +12,8 @@ class AddressSerializer(serializers.ModelSerializer):
         ]
 
     def create(self, validated_data):
-        user = self.context['request'].user
+        # Support both serializer.save(user=...) and context-based user assignment.
+        user = validated_data.pop('user', self.context['request'].user)
         return Address.objects.create(user=user, **validated_data)
 
 
@@ -46,20 +47,13 @@ class UserSerializer(serializers.ModelSerializer):
             'vendor_profile', 'customer_profile', 'addresses'
         ]
 
-
 class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, validators=[validate_password])
     password_confirm = serializers.CharField(write_only=True)
 
     class Meta:
         model = User
-        fields = ['username', 'email', 'password', 'password_confirm', 'role']
-
-    def validate_role(self, value):
-        # Prevent self-registration as admin
-        if value == User.Role.ADMIN:
-            raise serializers.ValidationError('Cannot register with admin role.')
-        return value
+        fields = ['username', 'email', 'password', 'password_confirm']  # role removed
 
     def validate(self, attrs):
         if attrs['password'] != attrs.pop('password_confirm'):
@@ -71,26 +65,23 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             username=validated_data['username'],
             email=validated_data['email'],
             password=validated_data['password'],
-            role=validated_data.get('role', User.Role.CUSTOMER),
+            role=User.Role.CUSTOMER, 
         )
-
-
 
 class VendorRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, validators=[validate_password])
     password_confirm = serializers.CharField(write_only=True)
     company_name = serializers.CharField()
     company_description = serializers.CharField(required=False, allow_blank=True)
-    company_slug = serializers.SlugField()
-    logo_url = serializers.URLField(required=False, allow_blank=True)
-    banner_url = serializers.URLField(required=False, allow_blank=True)
+    logo_url = serializers.ImageField(required=False)
+    banner_url = serializers.ImageField(required=False)
     contact_number = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
         model = User
         fields = [
             'username', 'email', 'password', 'password_confirm',
-            'company_name', 'company_description', 'company_slug',
+            'company_name', 'company_description',
             'logo_url', 'banner_url', 'contact_number'
         ]
 
@@ -104,7 +95,6 @@ class VendorRegistrationSerializer(serializers.ModelSerializer):
         vendor_fields = {
             'company_name': validated_data.pop('company_name'),
             'company_description': validated_data.pop('company_description', ''),
-            'company_slug': validated_data.pop('company_slug'),
             'logo_url': validated_data.pop('logo_url', ''),
             'banner_url': validated_data.pop('banner_url', ''),
             'contact_number': validated_data.pop('contact_number', ''),

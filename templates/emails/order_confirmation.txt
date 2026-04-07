@@ -1,0 +1,5 @@
+Order #{{ order.id }} confirmed
+
+Hi {{ user.username }},
+
+Thanks for your order. Your order total is {{ order.total_amount }}.

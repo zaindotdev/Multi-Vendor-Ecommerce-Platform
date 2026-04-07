@@ -13,4 +13,5 @@ dependencies = [
     "celery",
     "redis>=7.4.0",
     "stripe>=15.0.0",
+    "djangorestframework-stubs>=3.16.9",
 ]

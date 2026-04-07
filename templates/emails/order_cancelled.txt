@@ -1,0 +1,3 @@
+Order #{{ order.id }} cancelled
+
+Hi {{ user.username }}, your order has been cancelled.
