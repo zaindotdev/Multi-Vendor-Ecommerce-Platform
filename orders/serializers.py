@@ -5,6 +5,7 @@ from .models import (
     Cart, CartItem, Order, OrderItem,
     Shipment, Payment, Commission, Payout, PayoutItem,
 )
+from accounts.serializers import AddressSerializer
 
 
 def _resolve_vendor(variant):
@@ -120,11 +121,12 @@ class OrderItemSerializer(serializers.ModelSerializer):
     )
     vendor_name = serializers.CharField(source='vendor.company_name', read_only=True)
     commission = CommissionSerializer(read_only=True)
+    thumbnail = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
         fields = [
-            'id', 'product_variant', 'product_name',
+            'id', 'product_variant', 'product_name', 'thumbnail',
             'vendor', 'vendor_name',
             'quantity', 'unit_price', 'line_total',
             'status', 'commission',
@@ -134,11 +136,28 @@ class OrderItemSerializer(serializers.ModelSerializer):
             'id', 'unit_price', 'line_total',
             'vendor', 'created_at', 'updated_at',
         ]
+    
+    def get_thumbnail(self, obj) -> str | None:
+        product = obj.product_variant.product
+        image_obj = (
+            product.images.filter(is_primary=True).first()
+            or product.images.first()
+        )
 
+        if not image_obj or not image_obj.image_url:
+            return None
+
+        request = self.context.get('request')
+        return (
+            request.build_absolute_uri(image_obj.image_url.url)
+            if request
+            else image_obj.image_url.url
+        )
 
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
     user_email = serializers.EmailField(source='user.email', read_only=True)
+    shipping_address = AddressSerializer(read_only=True)
 
     class Meta:
         model = Order
