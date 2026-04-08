@@ -46,6 +46,11 @@ router.register(r'commissions', CommissionViewSet, basename='commission')
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/payments/stripe-webhook/', csrf_exempt(StripeWebhookView.as_view()), name='stripe-webhook'),
+    path(
+        'api/orders/payments/create-intent/',
+        PaymentViewSet.as_view({'post': 'create_payment_intent'}),
+        name='order-payment-create-intent',
+    ),
     path('api/', include(router.urls)),
     path('api/verify-email/', VerifyEmailView.as_view(), name='verify-email'),
     path('api/token/',         TokenObtainPairView.as_view(), name='token_obtain_pair'),

@@ -157,75 +157,78 @@ class OrderViewSet(viewsets.ModelViewSet):
         serializer = CheckoutSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
 
-        with transaction.atomic():
-            cart: Cart = serializer.validated_data['cart']
-            shipping_address = serializer.validated_data['shipping_address']
+        try:
+            with transaction.atomic():
+                cart: Cart = serializer.validated_data['cart']
+                shipping_address = serializer.validated_data['shipping_address']
 
-            cart_items = list(
-                cart.items
-                .select_related('product_variant__product__vendor__vendor_profile')
-                .all()
-            )
-
-            subtotal = sum(i.quantity * i.product_variant.price for i in cart_items)
-            shipping_fee = self._calculate_shipping_fee(cart_items)
-            total = subtotal + shipping_fee
-
-            order = Order.objects.create(
-                user=request.user,
-                shipping_address=shipping_address,
-                subtotal=subtotal,
-                shipping_fee=shipping_fee,
-                total_amount=total,
-                status=Order.Status.PENDING,
-                payment_status=Order.PaymentStatus.UNPAID,
-            )
-
-            for cart_item in cart_items:
-                variant = cart_item.product_variant
-
-                # Atomic stock decrement — prevents race conditions.
-                updated = (
-                    ProductVariant.objects
-                    .filter(pk=variant.pk, stock__gte=cart_item.quantity)
-                    .update(stock=F('stock') - cart_item.quantity)
+                cart_items = list(
+                    cart.items
+                    .select_related('product_variant__product__vendor__vendor_profile')
+                    .all()
                 )
-                if not updated:
-                    raise transaction.TransactionManagementError(
-                        f"Insufficient stock for '{variant.variant_name}'. Please update your cart."
+
+                subtotal = sum(i.quantity * i.product_variant.price for i in cart_items)
+                shipping_fee = self._calculate_shipping_fee(cart_items)
+                total = subtotal + shipping_fee
+
+                order = Order.objects.create(
+                    user=request.user,
+                    shipping_address=shipping_address,
+                    subtotal=subtotal,
+                    shipping_fee=shipping_fee,
+                    total_amount=total,
+                    status=Order.Status.PENDING,
+                    payment_status=Order.PaymentStatus.UNPAID,
+                )
+
+                for cart_item in cart_items:
+                    variant = cart_item.product_variant
+
+                    # Atomic stock decrement — prevents race conditions.
+                    updated = (
+                        ProductVariant.objects
+                        .filter(pk=variant.pk, stock__gte=cart_item.quantity)
+                        .update(stock=F('stock') - cart_item.quantity)
+                    )
+                    if not updated:
+                        raise transaction.TransactionManagementError(
+                            f"Insufficient stock for '{variant.variant_name}'. Please update your cart."
+                        )
+
+                    vendor = _resolve_vendor(variant)
+                    unit_price = variant.price
+                    line_total = unit_price * cart_item.quantity
+
+                    order_item = OrderItem.objects.create(
+                        order=order,
+                        product_variant=variant,
+                        vendor=vendor,
+                        quantity=cart_item.quantity,
+                        unit_price=unit_price,
+                        line_total=line_total,
+                        status=OrderItem.Status.PENDING,
                     )
 
-                vendor = _resolve_vendor(variant)
-                unit_price = variant.price
-                line_total = unit_price * cart_item.quantity
+                    rate = vendor.commission_rate
+                    commission_amount = (line_total * rate / Decimal('100')).quantize(Decimal('0.01'))
+                    net_amount = line_total - commission_amount
 
-                order_item = OrderItem.objects.create(
-                    order=order,
-                    product_variant=variant,
-                    vendor=vendor,
-                    quantity=cart_item.quantity,
-                    unit_price=unit_price,
-                    line_total=line_total,
-                    status=OrderItem.Status.PENDING,
-                )
+                    Commission.objects.create(
+                        vendor=vendor,
+                        order_item=order_item,
+                        gross_amount=line_total,
+                        commission_rate=rate,
+                        commission_amount=commission_amount,
+                        net_amount=net_amount,
+                        status=Commission.Status.PENDING,
+                    )
 
-                rate = vendor.commission_rate
-                commission_amount = (line_total * rate / Decimal('100')).quantize(Decimal('0.01'))
-                net_amount = line_total - commission_amount
+                payment, intent = PaymentViewSet._create_or_retrieve_payment_intent(order, request.user.id)
+                cart.items.all().delete()
+        except stripe.error.StripeError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
-                Commission.objects.create(
-                    vendor=vendor,
-                    order_item=order_item,
-                    gross_amount=line_total,
-                    commission_rate=rate,
-                    commission_amount=commission_amount,
-                    net_amount=net_amount,
-                    status=Commission.Status.PENDING,
-                )
-
-            cart.items.all().delete()
-
-        # Tasks run after the transaction commits — order is fully persisted by this point.
         send_order_confirmation_email.delay(order.id)
 
         vendor_ids = list(
@@ -237,10 +240,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         for vendor_id in vendor_ids:
             send_vendor_new_order_notification.delay(order.id, vendor_id)
 
-        return Response(
-            OrderSerializer(order, context={'request': request}).data,
-            status=status.HTTP_201_CREATED,
-        )
+        return Response({
+            'order': OrderSerializer(order, context={'request': request}).data,
+            **PaymentViewSet._serialize_intent_payload(payment=payment, intent=intent),
+        }, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'], url_path='cancel')
     def cancel(self, request: Request, pk=None) -> Response:
@@ -438,6 +441,64 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
 
         return qs.filter(order__user=user)
 
+    @staticmethod
+    def _serialize_intent_payload(*, payment: Payment, intent: dict) -> dict:
+        return {
+            'client_secret': intent.client_secret,
+            'payment_id': payment.id,
+            'payment_intent_id': intent.id,
+            'amount': intent.amount,
+            'currency': intent.currency,
+            'order_id': payment.order_id,
+        }
+
+    @staticmethod
+    def _create_or_retrieve_payment_intent(order: Order, user_id: int) -> tuple[Payment, dict]:
+        existing_payment = getattr(order, 'payment', None)
+
+        if existing_payment and existing_payment.payment_intent_id:
+            try:
+                intent = stripe.PaymentIntent.retrieve(existing_payment.payment_intent_id)
+                existing_payment.amount = order.total_amount
+                existing_payment.gateway = Payment.Gateway.STRIPE
+                existing_payment.save(update_fields=['amount', 'gateway'])
+                return existing_payment, intent
+            except stripe.error.StripeError:
+                pass
+
+        amount_cents = int(order.total_amount * 100)
+        intent = stripe.PaymentIntent.create(
+            amount=amount_cents,
+            currency='usd',
+            automatic_payment_methods={'enabled': True},
+            metadata={
+                'order_id': str(order.id),
+                'user_id': str(user_id),
+            },
+        )
+
+        payment, _ = Payment.objects.update_or_create(
+            order=order,
+            defaults={
+                'gateway': Payment.Gateway.STRIPE,
+                'amount': order.total_amount,
+                'payment_intent_id': intent.id,
+                'status': Payment.Status.PENDING,
+            },
+        )
+        return payment, intent
+
+    @staticmethod
+    def _stripe_value(obj, key: str, default=None):
+        if obj is None:
+            return default
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        try:
+            return obj[key]
+        except (TypeError, KeyError, IndexError, AttributeError):
+            return getattr(obj, key, default)
+
     @action(detail=False, methods=['post'], url_path='create-intent')
     def create_payment_intent(self, request: Request) -> Response:
         order_id = request.data.get('order_id')
@@ -452,56 +513,50 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
         if order.payment_status == Order.PaymentStatus.PAID:
             return Response({'detail': 'Order is already paid.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        existing_payment = getattr(order, 'payment', None)
-        if existing_payment and existing_payment.payment_intent_id:
-            try:
-                intent = stripe.PaymentIntent.retrieve(existing_payment.payment_intent_id)
-                return Response({'client_secret': intent.client_secret})
-            except stripe.error.StripeError:
-                pass
-
-        amount_cents = int(order.total_amount * 100)
-
         try:
-            intent = stripe.PaymentIntent.create(
-                amount=amount_cents,
-                currency='usd',
-                metadata={
-                    'order_id': str(order.id),
-                    'user_id': str(request.user.id),
-                },
-            )
+            payment, intent = self._create_or_retrieve_payment_intent(order, request.user.id)
         except stripe.error.StripeError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
-        Payment.objects.update_or_create(
-            order=order,
-            defaults={
-                'gateway': Payment.Gateway.STRIPE,
-                'amount': order.total_amount,
-                'payment_intent_id': intent.id,
-                'status': Payment.Status.PENDING,
-            },
-        )
-
-        return Response({'client_secret': intent.client_secret})
+        return Response(self._serialize_intent_payload(payment=payment, intent=intent))
 
     @staticmethod
     def _handle_payment_succeeded(intent: dict) -> None:
-        intent_id = intent.get('id')
-        try:
-            payment = Payment.objects.select_related('order').get(payment_intent_id=intent_id)
-        except Payment.DoesNotExist:
+        intent_id = PaymentViewSet._stripe_value(intent, 'id')
+        metadata = PaymentViewSet._stripe_value(intent, 'metadata', {}) or {}
+        order_id = PaymentViewSet._stripe_value(metadata, 'order_id')
+
+        payment = Payment.objects.select_related('order').filter(payment_intent_id=intent_id).first()
+        if payment is None and order_id:
+            payment = Payment.objects.select_related('order').filter(order_id=order_id).first()
+
+        if payment is None:
             return
 
         with transaction.atomic():
-            payment.status = Payment.Status.PAID
-            payment.save(update_fields=['status'])
+            payment_updates: list[str] = []
+            if payment.payment_intent_id != intent_id:
+                payment.payment_intent_id = intent_id
+                payment_updates.append('payment_intent_id')
+
+            if payment.status != Payment.Status.PAID:
+                payment.status = Payment.Status.PAID
+                payment_updates.append('status')
+
+            if payment_updates:
+                payment.save(update_fields=payment_updates)
 
             order = payment.order
-            order.payment_status = Order.PaymentStatus.PAID
-            order.status = Order.Status.CONFIRMED
-            order.save(update_fields=['payment_status', 'status'])
+            order_updates: list[str] = []
+            if order.payment_status != Order.PaymentStatus.PAID:
+                order.payment_status = Order.PaymentStatus.PAID
+                order_updates.append('payment_status')
+            if order.status == Order.Status.PENDING:
+                order.status = Order.Status.CONFIRMED
+                order_updates.append('status')
+
+            if order_updates:
+                order.save(update_fields=order_updates)
 
             Commission.objects.filter(
                 order_item__order=order,
@@ -510,14 +565,24 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
 
     @staticmethod
     def _handle_payment_failed(intent: dict) -> None:
-        intent_id = intent.get('id')
-        try:
-            payment = Payment.objects.select_related('order').get(payment_intent_id=intent_id)
-        except Payment.DoesNotExist:
+        intent_id = PaymentViewSet._stripe_value(intent, 'id')
+        metadata = PaymentViewSet._stripe_value(intent, 'metadata', {}) or {}
+        order_id = PaymentViewSet._stripe_value(metadata, 'order_id')
+
+        payment = Payment.objects.select_related('order').filter(payment_intent_id=intent_id).first()
+        if payment is None and order_id:
+            payment = Payment.objects.select_related('order').filter(order_id=order_id).first()
+
+        if payment is None:
             return
 
+        update_fields = ['status']
+        if payment.payment_intent_id != intent_id:
+            payment.payment_intent_id = intent_id
+            update_fields.append('payment_intent_id')
+
         payment.status = Payment.Status.FAILED
-        payment.save(update_fields=['status'])
+        payment.save(update_fields=update_fields)
 
 class StripeWebhookView(View):
     def post(self, request):

@@ -23,15 +23,36 @@ class CartItemSerializer(serializers.ModelSerializer):
         source='product_variant.price', max_digits=10, decimal_places=2, read_only=True
     )
     line_total = serializers.SerializerMethodField()
+    thumbnail = serializers.SerializerMethodField()
 
     class Meta:
         model = CartItem
         fields = [
             'id', 'product_variant', 'product_name',
             'quantity', 'unit_price', 'line_total',
+            'thumbnail',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_thumbnail(self, obj) -> str | None:
+        product = obj.product_variant.product
+
+        # Prefer the primary image, fall back to first by display_order
+        image_obj = (
+            product.images.filter(is_primary=True).first()
+            or product.images.first()
+        )
+
+        if not image_obj or not image_obj.image_url:
+            return None
+
+        request = self.context.get('request')
+        return (
+            request.build_absolute_uri(image_obj.image_url.url)
+            if request
+            else image_obj.image_url.url
+        )
 
     def get_line_total(self, obj) -> Decimal:
         return obj.quantity * obj.product_variant.price

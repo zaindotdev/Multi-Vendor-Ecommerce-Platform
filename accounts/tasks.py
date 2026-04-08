@@ -15,7 +15,7 @@ def send_verification_email(self, user_id):
     try:
         user = User.objects.get(pk=user_id)
         token = signing.dumps({'user_id': user.id})
-        verify_url = settings.FRONTEND_URL + reverse('verify-email') + f'?token={token}'
+        verify_url = settings.FRONTEND_URL + "verify" + f'?token={token}'
         send_mail(
             to=user.email,
             subject='Verify Your Email',
