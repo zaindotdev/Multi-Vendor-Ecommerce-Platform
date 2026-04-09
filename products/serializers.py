@@ -1,7 +1,7 @@
-from django.db.models import Avg, Count
+from django.db.models import Avg, Count, Q
 from rest_framework import serializers
 
-from orders.models import OrderItem
+from orders.models import Order, OrderItem
 from .models import Category, Product, ProductImage, ProductVariant, Review
 import uuid
 from django.utils.text import slugify
@@ -94,16 +94,29 @@ class ReviewSerializer(serializers.ModelSerializer):
         if product.vendor_id == request.user.id:
             raise serializers.ValidationError('Vendors cannot review their own products.')
 
+        eligible_statuses = [
+            Order.Status.CONFIRMED,
+            Order.Status.SHIPPED,
+            Order.Status.DELIVERED,
+        ]
         has_purchase = OrderItem.objects.filter(
             order__user=request.user,
-            order__status__in=['confirmed', 'shipped', 'delivered'],
             product_variant__product=product,
+        ).filter(
+            Q(order__status__in=eligible_statuses)
+            | Q(order__payment_status=Order.PaymentStatus.PAID)
         ).exists()
         if not has_purchase:
-            raise serializers.ValidationError('Only buyers with a verified purchase can review this product.')
+            raise serializers.ValidationError(
+                'Only buyers with a verified purchase can review this product. '
+                'The order must be paid or in confirmed/shipped/delivered status.'
+            )
 
-        # Enforce uniqueness manually because user is injected in perform_create, not in attrs.
-        already_reviewed = Review.objects.filter(product=product, user=request.user).exists()
+        already_reviewed_qs = Review.objects.filter(product=product, user=request.user)
+        if self.instance is not None:
+            already_reviewed_qs = already_reviewed_qs.exclude(pk=self.instance.pk)
+
+        already_reviewed = already_reviewed_qs.exists()
         if already_reviewed:
             raise serializers.ValidationError('You have already reviewed this product.')
 
@@ -171,7 +184,7 @@ class ProductCreateUpdateSerializer(serializers.ModelSerializer):
         if instance and instance.vendor_id != self.context['request'].user.id:
             raise serializers.ValidationError('You can only update your own products.')
         return attrs
-    
+
     def create(self, validated_data):
         if not validated_data.get('slug'):
             validated_data['slug'] = slugify(validated_data['name'])
