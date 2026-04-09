@@ -21,4 +21,5 @@ dependencies = [
     "django-celery-results>=2.6.0",
     "drf-spectacular>=0.29.0",
     "resend>=2.27.0",
+    "pillow>=12.2.0",
 ]
