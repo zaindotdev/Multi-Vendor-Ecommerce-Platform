@@ -48,7 +48,7 @@ class ProductListSerializer(serializers.ModelSerializer):
     thumbnail = serializers.SerializerMethodField()
     average_rating = serializers.SerializerMethodField()
     vendor_shop_name = serializers.SerializerMethodField()
-    url = serializers.HyperlinkedIdentityField(view_name='product-detail', lookup_field='slug')
+    url = serializers.HyperlinkedIdentityField(view_name='product-detail', lookup_field='id')
 
     class Meta:
         model = Product

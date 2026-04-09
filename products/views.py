@@ -39,7 +39,7 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
 
 class ProductViewSet(viewsets.ModelViewSet):
-    lookup_field = 'slug'
+    lookup_field = 'id'
     pagination_class = ProductPagination
     permission_classes = [IsAuthenticatedOrReadOnly, IsProductOwner]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
