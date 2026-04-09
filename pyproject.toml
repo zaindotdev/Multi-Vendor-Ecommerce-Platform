@@ -22,4 +22,5 @@ dependencies = [
     "drf-spectacular>=0.29.0",
     "resend>=2.27.0",
     "pillow>=12.2.0",
+    "gunicorn>=25.3.0",
 ]
