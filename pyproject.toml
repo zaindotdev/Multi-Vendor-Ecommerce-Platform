@@ -20,4 +20,5 @@ dependencies = [
     "django-cors-headers>=4.9.0",
     "django-celery-results>=2.6.0",
     "drf-spectacular>=0.29.0",
+    "resend>=2.27.0",
 ]
